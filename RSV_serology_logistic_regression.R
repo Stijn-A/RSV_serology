@@ -13,8 +13,8 @@ library(grid)
 
 #set WD
 folder <- "RSV_serology"
-PATH <- "/home/andewegs/" #"/home/andewegs/1_RSV_scripts/"
-setwd(file.path(PATH, folder))
+PATH <- file.path("C:/Users/Stijn/Desktop/RSV_serology-master") #"/home/andewegs/1_RSV_scripts/"
+setwd(PATH)
 getwd()
 
 # set figure save path
@@ -29,50 +29,51 @@ color_2 = '#E69F00' #Orange
 #
 
 # Import data 
-rsv.data <- read_csv(file = "data/infection_status_csv.txt")#"data/Riskfactors2_csv.txt")
+rsv.data_org <- read_csv(file = "data/infection_status_csv.txt")#"data/Riskfactors2_csv.txt")
 season_border = "10-01" #MM-DD
 # Some modifications
-rsv.data <- rsv.data %>%
+rsv.data <- rsv.data_org %>%
+  # Get day of the year of birthday (= number between 1 and 365)
   mutate(
-    # Get day of the year of birthday (= number between 1 and 365)
     Birth_doy = birthday %>% yday()
         ) %>%
+  # Alter number of housefold members 1 == no siblings, >1 == having siblings
   mutate(
     household04_counts = case_when(
-      age_days/365 > 5 ~ (household04 + 1),  #because the child itself is also included in household size
-      age_days/365 <= 5 ~ household04       #the household04 of children of age 5 should also include the child itself
-                            )
+      age_days/365 >= 5 ~ (household04 + 1),  #because the child itself is also included in household size
+      age_days/365 < 5 ~ household04)       #the household04 of children of age 5 should also include the child itself
         ) %>%
+  # Make number of siblings 0-4 years binary factor variable
   mutate(
-    # Make number of siblings 0-4 years two level factor variable
     Siblings04 = case_when(
       household04_counts <= 1 ~ 'False',
       household04_counts > 1 ~ 'True'
-                          )
+                          ) %>% 
+      factor()
       ) %>%
+  # Make number of siblings 5-9 years binary factor variable
   mutate(
-    # Make number of siblings 5-9 years two level factor variable
     Siblings59 = case_when(
       household59 <= 0 ~ 'False',
       household59 > 0 ~ 'True'
-    )
-  ) %>% 
+                          ) %>% 
+      factor()
+        ) %>% 
+  # Set nursery 0 1 to False True
   mutate(
-    # Set nursery 0 1 to False True
     Nursery = case_when(
       visitnursery_child == 0 ~ 'False',
       visitnursery_child == 1 ~ 'True'
-    ) ) %>% 
+                        ) %>% 
+      factor()
+        ) %>% 
   # Set variable for the different seasons.
   mutate(seasons = case_when(
     consultdate < paste("2006-", season_border, sep = "")  ~ "2005/2006", 
     (consultdate >= paste("2006-", season_border, sep = "") &  consultdate < "2010-01-01") ~ "2006/2007",
     (consultdate >= "2010-01-01" &  consultdate < paste("2016-", season_border, sep = "")) ~ "2015/2016",
-    consultdate >= paste("2016-", season_border, sep = "")  ~ "2016/2017"))
-# Set the variables to factors
-rsv.data$Siblings04 <- factor(rsv.data$Siblings04)
-rsv.data$Siblings59 <- factor(rsv.data$Siblings59)
-rsv.data$Nursery <- factor(rsv.data$Nursery)
+    consultdate >= paste("2016-", season_border, sep = "")  ~ "2016/2017")
+    )
 
 # Only keep data with the variables of intrest n = 616
 completeVec <- complete.cases(rsv.data[, c("Siblings04", "Nursery")])
@@ -130,7 +131,7 @@ doy_age <- ggplot(
   geom_ribbon(
     alpha = 0.25) +
   geom_line() +
-  ylab("Probability of infection") +
+  ylab("Probability of prior infection") +
   xlab("Birth day of year") +
   facet_wrap(
     facets = ~ age_days, labeller = labeller(age_days = 
@@ -154,81 +155,7 @@ doy_age <- ggplot(
   )
 
 doy_age
-ggsave(file = file.path(figure_folder, 'age_doy.svg'), plot = doy_age)
-
-# Generate some fake data for the model prediction
-rsv.preddata <- expand.grid(
-  age_days = seq(from = 1, to = 1095, by = 1),#as.matrix(c(30,60,90,120,150,180,270,365,547,730,900,1095)),
-  Birth_doy = seq(from = 1, to = 365, by = 1))
-
-# Make predictions for each combination using the GAM model
-# Do this in a temporary tibble, because two columns are produced: fit and se.fit
-tmp <- predict(
-  object = model1,
-  newdata = rsv.preddata,
-  type = "link",
-  se.fit = TRUE) %>%
-  as_tibble
-
-# Bind tmp to rsv.preddata and calculate the p_inf including 95% lower and upper bound
-rsv.doy_age.preddata <- bind_cols(rsv.preddata, tmp) %>%
-  mutate(
-    fit_lwr = fit + qnorm(0.025)*se.fit,   
-    fit_upr = fit + qnorm(0.975)*se.fit,
-    p_inf = fit %>% plogis,                #create vector of probabilities from log odds
-    p_inf_lwr = fit_lwr %>% plogis,
-    p_inf_upr = fit_upr %>% plogis)
-
-
-ratio_mean = rsv.doy_age.preddata[rsv.doy_age.preddata$Birth_doy == 182,]$p_inf / rsv.doy_age.preddata[rsv.doy_age.preddata$Birth_doy == 1,]$p_inf
-ratio_lwr = rsv.doy_age.preddata[rsv.doy_age.preddata$Birth_doy == 182,]$p_inf_lwr / rsv.doy_age.preddata[rsv.doy_age.preddata$Birth_doy == 1,]$p_inf_lwr
-ratio_upr = rsv.doy_age.preddata[rsv.doy_age.preddata$Birth_doy == 182,]$p_inf_upr / rsv.doy_age.preddata[rsv.doy_age.preddata$Birth_doy == 1,]$p_inf_upr
-age = rsv.doy_age.preddata[rsv.doy_age.preddata$Birth_doy == 182,]$age_days
-ratio.data <- data.frame(age_days = age, ratio_mean = ratio_mean, ratio_lwr = ratio_lwr, ratio_upr = ratio_upr)
-
-difference_mean = rsv.doy_age.preddata[rsv.doy_age.preddata$Birth_doy == 182,]$p_inf - rsv.doy_age.preddata[rsv.doy_age.preddata$Birth_doy == 1,]$p_inf
-diff.data <- data.frame(age_days = age, diff_mean = difference_mean)
-age_ratio <- ggplot(
-  data = ratio.data,
-  mapping = aes(
-    x = age_days, y = ratio_mean)) +
-  #geom_ribbon(
-  #  alpha = 0.25) +
-  geom_line() +
-  ylab("Ratio of Pinf (July 1/ Januari 1)") +
-  xlab("Age (days)") +
-  scale_x_continuous(limits = c(0, 1095), expand = c(0, 0)) +
-  scale_y_continuous(limits = c(1, 3),  expand = c(0, 0)) + 
-  #coord_cartesian(xlim = c(3, plotmaxage), ylim = c(0, y_max)) +
-  theme_bw() + 
-  theme(panel.grid.minor = element_blank(),panel.grid.major = element_line(colour = "grey65", size = 0.2),
-        strip.background = element_rect(
-          color="black", fill="white", linetype = "blank"),
-        strip.text = element_text(size=8)
-  )
-
-age_diff <- ggplot(
-  data = diff.data,
-  mapping = aes(
-    x = age_days, y = diff_mean)) +
-  #geom_ribbon(
-  #  alpha = 0.25) +
-  geom_line() +
-  ylab("Difference of Pinf (July 1 - Januari 1)") +
-  xlab("Age (days)") +
-  scale_x_continuous(limits = c(0, 1095), expand = c(0, 0)) +
-  scale_y_continuous(limits = c(0, 0.5),  expand = c(0, 0)) + 
-  #coord_cartesian(xlim = c(3, plotmaxage), ylim = c(0, y_max)) +
-  theme_bw() + 
-  theme(panel.grid.minor = element_blank(),panel.grid.major = element_line(colour = "grey65", size = 0.2),
-        strip.background = element_rect(
-          color="black", fill="white", linetype = "blank"),
-        strip.text = element_text(size=8)
-  )
-
-grid.arrange(age_ratio, age_diff, ncol=2)
-ggsave(file = file.path(figure_folder, "diff_ratio_pinf.svg"), arrangeGrob(age_ratio, age_diff, ncol=2))
-
+ggsave(file = file.path(PATH, 'age_doy.svg'), plot = doy_age)
 
 # Model1 for age time steps of 73 days
 rsv.preddata <- expand.grid(
@@ -267,7 +194,7 @@ doy_age_73 <- ggplot(
   geom_ribbon(
     alpha = 0.25) +
   geom_line() +
-  ylab("Probability of infection") +
+  ylab("Probability of prior infection") +
   xlab("Birth day of year") +
   facet_wrap(facets = ~ age_days, ncol = 5, labeller = labeller(age_days = 
                                                                   c("73" = "Age: 73 days",
@@ -293,7 +220,7 @@ doy_age_73 <- ggplot(
   )
 
 doy_age_73
-ggsave(file = file.path(figure_folder, 'age_doy_15grid.svg'), plot = doy_age_73)
+ggsave(file = file.path(PATH, 'age_doy_15grid.svg'), plot = doy_age_73)
 
 ## Model 2 with age, birth doy and Siblings04
 model2 <- gam(
@@ -348,7 +275,7 @@ doy_age_sib <- ggplot(
   geom_line() +
   scale_fill_manual(values=c(color_1, color_2)) + 
   scale_color_manual(values=c(color_1, color_2)) + 
-  ylab("Probability of infection") +
+  ylab("Probability of prior infection") +
   xlab("Birth day of year") +
   facet_wrap(
     facets = ~ age_days, labeller = labeller(age_days = 
@@ -369,7 +296,7 @@ doy_age_sib <- ggplot(
   )
 
 doy_age_sib
-ggsave(file = file.path(figure_folder, 'age_doy_sib.svg'), plot = doy_age_sib)
+ggsave(file = file.path(PATH, 'age_doy_sib.svg'), plot = doy_age_sib)
 
 # Additional model 2, with age, birth doy and Siblings59
 model2.1 <- gam(
@@ -424,7 +351,7 @@ doy_age_sib59 <- ggplot(
   geom_line() +
   scale_fill_manual(values=c(color_1, color_2)) + 
   scale_color_manual(values=c(color_1, color_2)) + 
-  ylab("Probability of infection") +
+  ylab("Probability of prior infection") +
   xlab("Birth day of year") +
   facet_wrap(
     facets = ~ age_days, labeller = labeller(age_days = 
@@ -445,7 +372,7 @@ doy_age_sib59 <- ggplot(
   )
 
 doy_age_sib59
-ggsave(file = file.path(figure_folder, 'age_doy_sib59.svg'), plot = doy_age_sib59)
+ggsave(file = file.path(PATH, 'age_doy_sib59.svg'), plot = doy_age_sib59)
 
 # Model3 with age, birth doy and nursery
 model3 <- gam(
@@ -503,7 +430,7 @@ doy_age_nur <- ggplot(
   geom_line() +
   scale_fill_manual(values=c(color_1, color_2)) + 
   scale_color_manual(values=c(color_1, color_2)) + 
-  ylab("Probability of infection") +
+  ylab("Probability of prior infection") +
   xlab("Birth day of year") +
   facet_wrap(
     facets = ~ age_days, labeller = labeller(age_days = 
@@ -524,7 +451,7 @@ doy_age_nur <- ggplot(
   ) + guides(fill=guide_legend(title="Day-care"), col=guide_legend(title="Day-care"))
 
 doy_age_nur   
-ggsave(file = file.path(figure_folder, 'age_doy_nur.svg'), plot = doy_age_nur)
+ggsave(file = file.path(PATH, 'age_doy_nur.svg'), plot = doy_age_nur)
 
 # Model4 with age, birth doy, Siblings04 and nursery
 model4 <- gam(
@@ -587,7 +514,7 @@ doy_age_sib_nur <- ggplot(
   geom_line() +
   scale_fill_manual(values=c(color_1, color_2)) + 
   scale_color_manual(values=c(color_1, color_2)) + 
-  ylab("Probability of infection") +
+  ylab("Probability of prior infection") +
   xlab("Birth day of year") +
   facet_wrap(
     facets = ~ age_days + Siblings04, labeller = labeller(age_days = 
@@ -611,7 +538,7 @@ doy_age_sib_nur <- ggplot(
   ) + guides(fill=guide_legend(title="Day-care"), col=guide_legend(title="Day-care"))
 
 doy_age_sib_nur
-ggsave(file = file.path(figure_folder, 'age_doy_sib_nur.svg'), plot = doy_age_sib_nur)
+ggsave(file = file.path(PATH, 'age_doy_sib_nur.svg'), plot = doy_age_sib_nur)
 
 #The examples/numbers given in the manuscript
 # Abstract summer vs winter 
