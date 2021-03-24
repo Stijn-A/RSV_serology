@@ -10,6 +10,7 @@ library(tidyverse)
 library(lubridate)
 library(gridExtra)
 library(grid)
+library(writexl)
 
 #set WD
 folder <- "RSV_serology"
@@ -73,7 +74,10 @@ rsv.data <- rsv.data_org %>%
     (consultdate >= paste("2006-", season_border, sep = "") &  consultdate < "2010-01-01") ~ "2006/2007",
     (consultdate >= "2010-01-01" &  consultdate < paste("2016-", season_border, sep = "")) ~ "2015/2016",
     consultdate >= paste("2016-", season_border, sep = "")  ~ "2016/2017")
-    )
+    ) %>% 
+  # Variable for the two cohorts
+  mutate(
+    cohort = if_else(seasons == "2005/2006" | seasons == "2006/2007", "2006/2007", "2016/2017"))
 
 # Only keep data with the variables of intrest n = 616
 completeVec <- complete.cases(rsv.data[, c("Siblings04", "Nursery")])
@@ -225,7 +229,7 @@ ggsave(file = file.path(PATH, 'age_doy_15grid.svg'), plot = doy_age_73)
 ## Model 2 with age, birth doy and Siblings04
 model2 <- gam(
   formula = infection ~ 
-    Siblings04 + 
+    seasons + 
     ti(Birth_doy, bs = "cp", k = 11) + 
     ti(age_days, bs = "ps", k = 25),# +
     #ti(age_days, bs = "ps", k = 15, by = Siblings04),
@@ -539,6 +543,65 @@ doy_age_sib_nur <- ggplot(
 
 doy_age_sib_nur
 ggsave(file = file.path(PATH, 'age_doy_sib_nur.svg'), plot = doy_age_sib_nur)
+
+# Table 1
+rsv.preddata <- expand.grid(
+  age_days = c(30,365,730),
+  Birth_doy = c(1,182), # 1 Jan, 1 July
+  Siblings04 = factor(c('True', 'False')),
+  Nursery = factor(c('True', 'False')))
+
+# Make predictions for each combination using the GAM model
+# Do this in a temporary tibble, because two columns are produced: fit and se.fit
+tmp <- predict(
+  object = model4,
+  newdata = rsv.preddata,
+  type = "link",
+  se.fit = TRUE) %>%
+  as_tibble
+
+# Bind tmp to rsv.preddata and calculate the p_inf including 95% lower and upper bound
+rsv.doy_age_sib_nur.preddata <- bind_cols(rsv.preddata, tmp) %>%
+  mutate(
+    fit_lwr = fit + qnorm(0.025)*se.fit,   
+    fit_upr = fit + qnorm(0.975)*se.fit,
+    p_inf = fit %>% plogis,                #create vector of probabilities from log odds
+    p_inf_lwr = fit_lwr %>% plogis,
+    p_inf_upr = fit_upr %>% plogis)
+
+table_model4 <- rsv.doy_age_sib_nur.preddata %>% 
+  mutate(
+    p_inf = p_inf,# %>% round(digits = 3),
+    p_inf_lwr = p_inf_lwr,# %>% round(digits = 3),
+    p_inf_upr = p_inf_upr,# %>% round(digits = 3),
+    n = rsv.data %>% nrow
+  ) %>% 
+  select(`Age (days)` = age_days, 
+         DOY = Birth_doy,
+         Siblings04,
+         `Day-care` = Nursery,
+         n,
+         `Probability of prior infection` = p_inf,
+         `Lower` = p_inf_lwr,
+         `Upper` = p_inf_upr) %>% 
+  arrange(`Age (days)`, DOY, Siblings04) %>% 
+  write_xlsx(path = "tabel_model4.xlsx")
+
+# table 1
+table_complete <- table_model4 %>% 
+  left_join(table_model1, by = c("Age (days)", "DOY")) %>% 
+  left_join(table_model2, by = c("Age (days)", "DOY", "Siblings04")) %>% 
+  left_join(table_model3, by = c("Age (days)", "DOY", "Day-care")) %>% 
+  select(`Age (days)`, DOY, `Probability of prior infection m1`, `Lower m1`, `Upper m1`,
+         `Siblings04`, `Probability of prior infection m2`, `Lower m2`, `Upper m2`,
+         `Day-care`, `Probability of prior infection m3`, `Lower m3`, `Upper m3`,
+         `Probability of prior infection m4`, `Lower m4`, `Upper m4`) %>% 
+  write_xlsx(path = "voorbeeld_tabel_versie2.xlsx")
+
+
+
+
+rm(age_groups)
 
 #The examples/numbers given in the manuscript
 # Abstract summer vs winter 
